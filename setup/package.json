@@ -1,0 +1,25 @@
+{
+  "type": "module",
+  "dependencies": {
+    "@mysten/bcs": "^1.4.0",
+    "@mysten/sui": "^1.21.2",
+    "@mysten/sui.js": "latest",
+    "@noble/hashes": "^1.7.1",
+    "chai": "^4.3.7",
+    "dotenv": "^16.4.7",
+    "ed25519": "^0.0.5",
+    "mocha": "^10.0.0",
+    "ts-node": "^10.9.2",
+    "tweetnacl": "^1.0.3"
+  },
+  "scripts": {
+    "create": "node ./src/create_new_permission.js",
+    "add": "node ./src/add_permission.js",
+    "modify": "node ./src/modify_permission.js",
+    "remove": "node ./src/remove_permission.js",
+    "create_coonected_list": "node ./src/connected_list/create_new.js",
+    "add_coonected_list": "node ./src/connected_list/add.js",
+    "modify_coonected_list": "node ./src/connected_list/modify.js",
+    "remove_coonected_list": "node ./src/connected_list/remove.js"
+  }
+}
