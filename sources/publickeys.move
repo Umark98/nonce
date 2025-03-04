@@ -1,26 +1,48 @@
+#[allow(unused_variable, duplicate_alias)]
 module shareobject::publickeys {
     use sui::ed25519;
+    use sui::table::{Self, Table};
+    use sui::object::{Self, UID};
+    use sui::transfer;
+    use sui::tx_context::{Self, TxContext};
 
     const ESignatureNotVerified: u64 = 1;
-    const EInvalidOwner: u64 = 2;
-    const EInvalidNonce: u64 = 3;
     const EEmptyKeyList: u64 = 4;
     const EInvalidKeyFormat: u64 = 5;
-    const ETooManyKeys: u64 = 6;
     const EKeyNotFound: u64 = 7;
-    const MAX_KEYS: u64 = 10;
+    const ENotAdmin: u64 = 8;
+    
+
+    public struct AdminCap has key, store {
+        id: UID,
+        owner: address
+    }
 
     public struct PublicKeys has key, store {
         id: UID,
         public_key_list: vector<vector<u8>>,
-        nonce: u64,
+        nonce_table: Table<address, u64>, // Per-user nonce table
         owner: address,
     }
 
-    public fun create_signature_list(
+    // Create the AdminCap (called once by the initial admin)
+    public entry fun create_admin_cap(ctx: &mut TxContext) {
+        let sender = tx_context::sender(ctx);
+        let admin_cap = AdminCap {
+            id: object::new(ctx),
+            owner: sender
+        };
+        transfer::transfer(admin_cap, sender);
+    }
+
+    // Create a shared signature list requiring AdminCap
+    public entry fun create_signature_list(
+        admin_cap: &AdminCap,
         public_key_list: vector<vector<u8>>,
         ctx: &mut TxContext
     ) {
+        let sender = tx_context::sender(ctx);
+        assert!(sender == admin_cap.owner, ENotAdmin);
         assert!(!vector::is_empty(&public_key_list), EEmptyKeyList);
         let len = vector::length(&public_key_list);
         let mut i = 0;
@@ -28,70 +50,97 @@ module shareobject::publickeys {
             assert!(vector::length(vector::borrow(&public_key_list, i)) == 32, EInvalidKeyFormat);
             i = i + 1;
         };
+        
         let signature_wrapper = PublicKeys {
             id: object::new(ctx),
             public_key_list,
-            nonce: 0,
-            owner: tx_context::sender(ctx),
+            nonce_table: table::new<address, u64>(ctx), // Starts empty
+            owner: sender,
         };
+        
         transfer::share_object(signature_wrapper);
     }
 
-    public fun add_publickey(
+    // Add a public key (AdminCap restricted)
+    public entry fun add_publickey(
+        admin_cap: &AdminCap,
         signature_wrapper: &mut PublicKeys,
         new_publickey: vector<u8>,
-        signature: vector<u8>,
-        msg: vector<u8>,
         ctx: &mut TxContext
     ) {
-        assert!(tx_context::sender(ctx) == signature_wrapper.owner, EInvalidOwner);
+        let sender = tx_context::sender(ctx);
+        assert!(sender == admin_cap.owner, ENotAdmin);
         assert!(!vector::is_empty(&new_publickey), EEmptyKeyList);
-        assert!(vector::length(&signature_wrapper.public_key_list) < MAX_KEYS, ETooManyKeys);
         assert!(vector::length(&new_publickey) == 32, EInvalidKeyFormat);
-        let verified = verify_signature(signature_wrapper, &signature, &msg);
-        assert!(verified, ESignatureNotVerified);
         vector::push_back(&mut signature_wrapper.public_key_list, new_publickey);
-        signature_wrapper.nonce = signature_wrapper.nonce + 1;
     }
 
-    public fun remove_publickey(
+    // Remove a public key (AdminCap restricted)
+    public entry fun remove_publickey(
+        admin_cap: &AdminCap,
         signature_wrapper: &mut PublicKeys,
         index: u64,
-        signature: vector<u8>,
-        msg: vector<u8>,
         ctx: &mut TxContext
     ) {
-        assert!(tx_context::sender(ctx) == signature_wrapper.owner, EInvalidOwner);
-        assert!(vector::length(&signature_wrapper.public_key_list) > 1, EEmptyKeyList); // Prevent removing last key
-        let verified = verify_signature(signature_wrapper, &signature, &msg);
-        assert!(verified, ESignatureNotVerified);
+        let sender = tx_context::sender(ctx);
+        assert!(sender == admin_cap.owner, ENotAdmin);
+        assert!(vector::length(&signature_wrapper.public_key_list) > 1, EEmptyKeyList);
         assert!(index < vector::length(&signature_wrapper.public_key_list), EKeyNotFound);
         vector::remove(&mut signature_wrapper.public_key_list, index);
-        signature_wrapper.nonce = signature_wrapper.nonce + 1;
     }
 
-    public fun test_function(
+    // Test signature verification
+    public entry fun test_function(
         signature_wrapper: &mut PublicKeys,
         signature: vector<u8>,
-        msg: vector<u8>,
-        expected_nonce: u64,
-        ctx: &mut TxContext
+        backend_id: u64,
+        ctx: &TxContext
     ) {
-        assert!(tx_context::sender(ctx) == signature_wrapper.owner, EInvalidOwner);
-        assert!(signature_wrapper.nonce == expected_nonce, EInvalidNonce);
-        let verified = verify_signature(signature_wrapper, &signature, &msg);
+        let verified = verify_signature(signature_wrapper, &signature, backend_id, ctx);
         assert!(verified, ESignatureNotVerified);
-        signature_wrapper.nonce = signature_wrapper.nonce + 1;
     }
 
-    fun verify_signature(wrapper: &PublicKeys, signature: &vector<u8>, msg: &vector<u8>): bool {
-        let master_key = vector::borrow(&wrapper.public_key_list, 0); // Admin key is at index 0
-        let nonce_bytes = u64_to_bytes(wrapper.nonce);
-        let mut new_msg = *msg;
-        vector::append(&mut new_msg, nonce_bytes);
-        ed25519::ed25519_verify(signature, master_key, &new_msg)
+    // Verify signature with per-user nonce table
+    fun verify_signature(
+        wrapper: &mut PublicKeys,
+        signature: &vector<u8>,
+        backend_id: u64,
+        ctx: &TxContext
+    ): bool {
+        assert!(backend_id < vector::length(&wrapper.public_key_list), EKeyNotFound);
+        let sender = tx_context::sender(ctx); // User address is the sender
+        let master_key = vector::borrow(&wrapper.public_key_list, backend_id);
+        
+        // Get or initialize the nonce for the sender
+        let nonce = if (table::contains(&wrapper.nonce_table, sender)) {
+            *table::borrow(&wrapper.nonce_table, sender)
+        } else {
+            table::add(&mut wrapper.nonce_table, sender, 0);
+            0
+        };
+        
+        // Construct the message from digest and nonce
+        let nonce_bytes = u64_to_bytes(nonce);
+        let digest = *tx_context::digest(ctx);
+        let mut msg = vector::empty<u8>();
+        vector::append(&mut msg, digest);
+        vector::append(&mut msg, nonce_bytes);
+
+        // Verify the signature
+        let verified = ed25519::ed25519_verify(signature, master_key, &msg);
+        
+        // Increment the nonce if verified
+        if (verified) {
+            if (table::contains(&wrapper.nonce_table, sender)) {
+                table::remove(&mut wrapper.nonce_table, sender);
+            };
+            table::add(&mut wrapper.nonce_table, sender, nonce + 1);
+        };
+        
+        verified
     }
 
+    // Convert u64 to bytes for nonce
     fun u64_to_bytes(num: u64): vector<u8> {
         let mut bytes = vector::empty<u8>();
         vector::push_back(&mut bytes, (num >> 56) as u8);
@@ -105,105 +154,12 @@ module shareobject::publickeys {
         bytes
     }
 
-    public fun get_nonce(wrapper: &PublicKeys): u64 {
-        wrapper.nonce
+    // Get nonce for a specific user
+    public fun get_nonce(wrapper: &PublicKeys, user: address): u64 {
+        if (table::contains(&wrapper.nonce_table, user)) {
+            *table::borrow(&wrapper.nonce_table, user)
+        } else {
+            0 // Return 0 for non-existent users
+        }
     }
 }
-
-
-
-
-// module shareobject::publickeys {
-//     use sui::ed25519;
-    
-//     const ESignatureNotVerified: u64 = 1;
-//     const EInvalidOwner: u64 = 2;
-//     const EInvalidNonce: u64 = 3;
-//     const EEmptyKeyList: u64 = 4;
-//     const EInvalidKeyFormat: u64 = 5;
-//     const ETooManyKeys: u64 = 6;
-//     const MAX_KEYS: u64 = 10;
-// public struct PublicKeys has key, store {
-//     id: UID,
-//     public_key_list: vector<vector<u8>>,
-//     nonce: u64,
-//     owner: address,
-// }
-
-// public fun create_signature_list(
-//     public_key_list: vector<vector<u8>>,
-//     ctx: &mut TxContext
-// ) {
-//     assert!(!vector::is_empty(&public_key_list), EEmptyKeyList);
-//     let len = vector::length(&public_key_list);
-//     let mut i = 0;
-//     while (i < len) {
-//         assert!(vector::length(vector::borrow(&public_key_list, i)) == 32, EInvalidKeyFormat);
-//         i = i + 1;
-//     };
-//     let signature_wrapper = PublicKeys {
-//         id: object::new(ctx),
-//         public_key_list,
-//         nonce: 0,
-//         owner: tx_context::sender(ctx),
-//     };
-//     transfer::share_object(signature_wrapper);
-// }
-
-// public fun add_publickey(
-//     signature_wrapper: &mut PublicKeys,
-//     new_publickey: vector<u8>,
-//     signature: vector<u8>,
-//     msg: vector<u8>,
-//     ctx: &mut TxContext
-// ) {
-//     assert!(tx_context::sender(ctx) == signature_wrapper.owner, EInvalidOwner);
-//     assert!(!vector::is_empty(&new_publickey), EEmptyKeyList);
-//     assert!(vector::length(&signature_wrapper.public_key_list) < MAX_KEYS, ETooManyKeys);
-//     assert!(vector::length(&new_publickey) == 32, EInvalidKeyFormat);
-//     let verified = verify_signature(signature_wrapper, &signature, &msg);
-//     assert!(verified, ESignatureNotVerified);
-//     vector::push_back(&mut signature_wrapper.public_key_list, new_publickey);
-//     signature_wrapper.nonce = signature_wrapper.nonce + 1;
-// }
-
-
-// public fun test_function(
-//     signature_wrapper: &mut PublicKeys,
-//     signature: vector<u8>,
-//     msg: vector<u8>,
-//     expected_nonce: u64,
-//     ctx: &mut TxContext
-// ) {
-//     assert!(tx_context::sender(ctx) == signature_wrapper.owner, EInvalidOwner);
-//     assert!(signature_wrapper.nonce == expected_nonce, EInvalidNonce);
-//     let verified = verify_signature(signature_wrapper, &signature, &msg);
-//     assert!(verified, ESignatureNotVerified);
-//     signature_wrapper.nonce = signature_wrapper.nonce + 1;
-// }
-
-// fun verify_signature(wrapper: &PublicKeys, signature: &vector<u8>, msg: &vector<u8>): bool {
-//     let master_key = vector::borrow(&wrapper.public_key_list, 0);
-//     let nonce_bytes = u64_to_bytes(wrapper.nonce);
-//     let mut new_msg = *msg; // Dereference to get owned value
-//     vector::append(&mut new_msg, nonce_bytes);
-//     ed25519::ed25519_verify(signature, master_key, &new_msg)
-// }
-
-// fun u64_to_bytes(num: u64): vector<u8> {
-//     let mut bytes = vector::empty<u8>();
-//     vector::push_back(&mut bytes, (num >> 56) as u8);
-//     vector::push_back(&mut bytes, (num >> 48) as u8);
-//     vector::push_back(&mut bytes, (num >> 40) as u8);
-//     vector::push_back(&mut bytes, (num >> 32) as u8);
-//     vector::push_back(&mut bytes, (num >> 24) as u8);
-//     vector::push_back(&mut bytes, (num >> 16) as u8);
-//     vector::push_back(&mut bytes, (num >> 8) as u8);
-//     vector::push_back(&mut bytes, num as u8);
-//     bytes
-// }
-
-// public fun get_nonce(wrapper: &PublicKeys): u64 {
-//     wrapper.nonce
-// }
-// }
