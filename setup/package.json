@@ -21,5 +21,8 @@
     "add_coonected_list": "node ./src/connected_list/add.js",
     "modify_coonected_list": "node ./src/connected_list/modify.js",
     "remove_coonected_list": "node ./src/connected_list/remove.js"
+  },
+  "overrides": {
+    "serialize-javascript": "^7.1.0"
   }
 }
