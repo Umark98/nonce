@@ -13,10 +13,10 @@
     "tweetnacl": "^1.0.3"
   },
   "scripts": {
-    "create": "node ./src/create_new_permission.js",
-    "add": "node ./src/add_permission.js",
-    "modify": "node ./src/modify_permission.js",
-    "remove": "node ./src/remove_permission.js",
+    "create": "node ./src/permissionList/create_new_permission.js",
+    "add": "node ./src/permissionList/add_permission.js",
+    "modify": "node ./src/permissionList/modify_permission.js",
+    "remove": "node ./src/permissionList/remove_permission.js",
     "create_coonected_list": "node ./src/connected_list/create_new.js",
     "add_coonected_list": "node ./src/connected_list/add.js",
     "modify_coonected_list": "node ./src/connected_list/modify.js",
