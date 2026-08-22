@@ -5,7 +5,10 @@ import dotenv from "dotenv";
 import { toB64 } from "@mysten/sui/utils"; // Import toB64 utility
 
 dotenv.config();
-const MNEMONIC = "***REMOVED-SECRET***";
+const MNEMONIC = process.env.MNEMONIC;
+if (!MNEMONIC) {
+  throw new Error("MNEMONIC is not set. Copy setup/.env.example to setup/.env and fill it in.");
+}
 
 async function getWalletKeypair() {
   try {
